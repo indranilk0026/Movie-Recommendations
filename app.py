@@ -1,214 +1,425 @@
+
 import os
-import random
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
 
-import features as ft
-from recommender import DEFAULT_WEIGHTS, Recommender
-
-st.set_page_config(page_title="CineMatch - Movie Recommender", page_icon="🎬", layout="wide")
-
-ENGINES = {
-    "Hybrid (blend of all signals)": "hybrid",
-    "Semantic embeddings": "embed",
-    "TF-IDF keywords": "tfidf",
-    "Bag-of-Words (original baseline)": "count",
-    "Collaborative (viewers' ratings)": "cf",
-}
-LANGS = {"en": "English", "fr": "French", "es": "Spanish", "de": "German", "it": "Italian", "ja": "Japanese",
-         "zh": "Chinese", "ko": "Korean", "hi": "Hindi", "ru": "Russian", "pt": "Portuguese", "cn": "Cantonese",
-         "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "ml": "Malayalam", "tr": "Turkish", "sv": "Swedish"}
+from recommender import Recommender
 
 
-# ---------------- load model ----------------
-@st.cache_resource(show_spinner="Loading the recommendation models...")
+# --------------------------------------------------
+# PAGE CONFIGURATION
+# --------------------------------------------------
+
+st.set_page_config(
+    page_title="CineMatch | Movie Recommender",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+# --------------------------------------------------
+# PATHS
+# --------------------------------------------------
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ARTIFACTS_DIR = os.path.join(BASE_DIR, "artifacts")
+
+
+# --------------------------------------------------
+# CUSTOM CSS
+# --------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #0e1117;
+    }
+
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        color: #E50914;
+        text-align: center;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        text-align: center;
+        color: #aaaaaa;
+        font-size: 16px;
+        margin-bottom: 30px;
+    }
+
+    .movie-title {
+        font-size: 19px;
+        font-weight: 700;
+        color: #ffffff;
+    }
+
+    .movie-info {
+        color: #bbbbbb;
+        font-size: 14px;
+    }
+
+    div.stButton > button {
+        background-color: #E50914;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        font-weight: 600;
+        width: 100%;
+    }
+
+    div.stButton > button:hover {
+        background-color: #b20710;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# --------------------------------------------------
+# LOAD MODEL
+# --------------------------------------------------
+
+@st.cache_resource(show_spinner="Loading CineMatch recommendation model...")
 def load_recommender():
-    try:
-        return Recommender.load("artifacts")
-    except Exception:
-        d = ft.find_data_dir()
-        return Recommender.build_lite(d) if d else None
+    return Recommender.load(ARTIFACTS_DIR)
 
 
-@st.cache_data
-def load_eval():
-    p = "artifacts/evaluation_results.csv"
-    return pd.read_csv(p, index_col=0) if os.path.exists(p) else None
+try:
+    rec = load_recommender()
 
+except Exception as e:
+    st.error("Unable to load the CineMatch model.")
 
-rec = load_recommender()
-if rec is None:
-    st.error("No model found. Add the `artifacts/` folder (from the notebook) or the two TMDB csv files "
-             "(`tmdb_5000_movies.csv`, `tmdb_5000_credits.zip`) in a `datasets/` folder.")
+    st.markdown(
+        """
+        Please check that your GitHub repository contains:
+
+        ```text
+        artifacts/
+            meta.csv.gz
+            count.npz
+            tfidf.npz
+            weights.json
+        ```
+
+        Also verify that `recommender.py` is the updated version.
+        """
+    )
+
+    with st.expander("Technical error"):
+        st.exception(e)
+
     st.stop()
-meta = rec.meta
 
 
-# ---------------- UI helpers ----------------
-def card(row, q=None, show_why=True, extra=None):
-    with st.container(border=True):
-        year = f" ({row['year']})" if row["year"] else ""
-        st.markdown(f"**{row['title']}**{year}")
-        st.caption(f"⭐ {row['vote_average']:.1f}  ·  {', '.join(row['genres_l'][:3])}")
-        if row["director"]:
-            st.caption(f"🎬 {row['director']}  ·  {', '.join(row['cast_l'][:2])}")
-        ov = row["overview"]
-        st.write(ov[:200] + ("…" if len(ov) > 200 else ""))
-        if extra:
-            st.caption(extra)
-        if show_why and q is not None:
-            with st.expander("Why this movie?"):
-                for r in rec.explain(q, int(row.name)) or ["Similar overall storyline and style"]:
-                    st.write("• " + r)
-                parts = [f"{lab}: {row['s_' + k]:.2f}" for k, lab in
-                         [("tfidf", "keywords"), ("embed", "semantic"), ("cf", "viewers' taste")] if f"s_{k}" in row.index]
-                st.caption("Similarity  |  " + "  |  ".join(parts))
+# --------------------------------------------------
+# HEADER
+# --------------------------------------------------
+
+st.markdown(
+    '<div class="main-title">🎬 CineMatch</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    'Discover movies that match your taste.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.caption(
+    f"Recommendation engine: {rec.mode.upper()} "
+    f"| Movies available: {rec.n:,}"
+)
 
 
-def grid(df, q=None, per_row=3):
-    if df.empty:
-        st.info("No movies match these filters. Try relaxing them.")
-        return
-    for s in range(0, len(df), per_row):
-        cols = st.columns(per_row)
-        for col, (_, row) in zip(cols, df.iloc[s:s + per_row].iterrows()):
-            with col:
-                card(row, q, extra=f"Match score: {row['score']:.2f}")
+# --------------------------------------------------
+# SIDEBAR
+# --------------------------------------------------
+
+st.sidebar.title("🎥 CineMatch")
+st.sidebar.markdown("---")
+
+st.sidebar.subheader("Recommendation Settings")
+
+method_options = {
+    "Hybrid Recommendation": "hybrid",
+    "TF-IDF Similarity": "tfidf",
+    "Bag of Words Similarity": "count",
+    "Movie Quality": "quality",
+}
+
+selected_method = st.sidebar.selectbox(
+    "Recommendation Method",
+    list(method_options.keys()),
+)
+
+method = method_options[selected_method]
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Filters")
+
+all_genres = sorted({
+    genre
+    for genres in rec.meta["genres_l"]
+    for genre in genres
+})
+
+selected_genres = st.sidebar.multiselect(
+    "Genres",
+    all_genres,
+)
+
+min_rating = st.sidebar.slider(
+    "Minimum TMDB Rating",
+    min_value=0.0,
+    max_value=10.0,
+    value=0.0,
+    step=0.5,
+)
+
+languages = sorted(
+    rec.meta["original_language"]
+    .dropna()
+    .unique()
+    .tolist()
+)
+
+selected_language = st.sidebar.selectbox(
+    "Original Language",
+    ["Any"] + languages,
+)
+
+year_min = int(rec.meta["year"].min())
+year_max = int(rec.meta["year"].max())
+
+year_range = st.sidebar.slider(
+    "Release Year",
+    min_value=year_min,
+    max_value=year_max,
+    value=(year_min, year_max),
+)
+
+number_of_recommendations = st.sidebar.slider(
+    "Number of Recommendations",
+    min_value=5,
+    max_value=20,
+    value=10,
+)
 
 
-# ---------------- sidebar ----------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    if rec.mode == "lite":
-        st.info("Lite mode: keyword (TF-IDF) engine. Add the `artifacts/` folder for embeddings, "
-                "collaborative filtering and the hybrid model.")
-    options = {k: v for k, v in ENGINES.items() if v == "hybrid" or v in rec.signals}
-    method = options[st.selectbox("Recommendation engine", list(options), index=0)]
-    n_recs = st.slider("Number of recommendations", 3, 12, 6)
-    weights = dict(rec.weights)
-    if method == "hybrid":
-        with st.expander("Hybrid weights (advanced)"):
-            for k, label in [("embed", "Semantic embeddings"), ("tfidf", "TF-IDF keywords"),
-                             ("cf", "Viewers' ratings"), ("quality", "Rating / popularity prior")]:
-                if k == "quality" or k in rec.signals:
-                    weights[k] = st.slider(label, 0.0, 1.0, float(weights.get(k, DEFAULT_WEIGHTS[k])), 0.05)
-    st.subheader("Filters")
-    all_genres = sorted({g for gs in meta["genres_l"] for g in gs})
-    langs = sorted(meta["original_language"].dropna().unique(), key=lambda c: (c not in LANGS, LANGS.get(c, c)))
-    y_min, y_max = int(meta["year"].min()), int(meta["year"].max())
-    genres = st.multiselect("Genres (any of)", all_genres)
-    min_rating = st.slider("Minimum rating", 0.0, 9.0, 0.0, 0.5)
-    language = st.selectbox("Original language", ["Any"] + langs, format_func=lambda c: LANGS.get(c, c))
-    year_range = st.slider("Release year", y_min, y_max, (y_min, y_max))
-filters = dict(genres=genres, min_rating=min_rating, language=language, year_range=year_range)
+# --------------------------------------------------
+# MAIN CONTENT
+# --------------------------------------------------
 
-# ---------------- main ----------------
-st.title("🎬 CineMatch: Movie Recommendation System")
-st.caption("Content-based + collaborative + semantic recommendations on the TMDB 5000 movie dataset.")
-tab_rec, tab_prof, tab_eda, tab_eval, tab_about = st.tabs(
-    ["🎬 Recommend", "👤 My taste profile", "📊 Explore the data", "🧪 Model comparison", "ℹ️ About"])
+tab1, tab2 = st.tabs(
+    ["🎬 Movie Recommendations", "📊 About CineMatch"]
+)
 
-# ---- tab 1: one movie
-with tab_rec:
-    st.session_state.setdefault("query", None)
-    selected = st.selectbox("Choose a movie (type to search)", rec.labels, index=None, placeholder="Select a movie...")
-    c1, c2, _ = st.columns([1, 1, 3])
-    if c1.button("🔎 Show recommendations"):
-        if selected is None:
-            st.info("Please choose a movie first.")
+
+# --------------------------------------------------
+# TAB 1: RECOMMENDATIONS
+# --------------------------------------------------
+
+with tab1:
+
+    st.subheader("Find Your Next Movie")
+
+    movie_options = rec.meta["label"].tolist()
+
+    selected_movie = st.selectbox(
+        "Search and select a movie",
+        movie_options,
+        index=None,
+        placeholder="Type a movie title...",
+    )
+
+    recommend_button = st.button(
+        "✨ Find Similar Movies",
+        use_container_width=True,
+    )
+
+    if recommend_button:
+
+        if not selected_movie:
+            st.warning("Please select a movie first.")
+
         else:
-            st.session_state.query = rec.label_to_idx[selected]
-    if c2.button("🎲 Surprise me"):
-        st.session_state.query = random.randrange(rec.n)
-    q = st.session_state.query
-    if q is None:
-        st.info("Choose a movie and press the button to get recommendations.")
-    else:
-        use = method
-        if method == "cf" and not rec.has_cf[q]:
-            st.warning("This movie has too few viewer ratings for the collaborative engine; using Hybrid instead.")
-            use = "hybrid"
-        st.subheader("Because you picked")
-        left, _ = st.columns([1, 2])
-        with left:
-            card(meta.iloc[q], show_why=False)
-        st.subheader("You might also like")
-        grid(rec.recommend(q, n=n_recs, method=use, weights=weights, **filters), q)
 
-# ---- tab 2: taste profile (several movies)
-with tab_prof:
-    st.write("Pick **2 to 10 movies you love**. The system builds a taste profile from all of them and finds movies "
-             "that match the combination, which is useful when you have mixed tastes.")
-    favs = st.multiselect("Your favourite movies", rec.labels, max_selections=10)
-    if len(favs) < 2:
-        st.info("Select at least two movies.")
-    else:
-        idxs = [rec.label_to_idx[f] for f in favs]
-        use = "hybrid" if method == "cf" and not rec.has_cf[idxs].any() else method
-        st.subheader("Recommended for your taste")
-        grid(rec.recommend(idxs, n=n_recs, method=use, weights=weights, **filters), idxs)
+            try:
+                with st.spinner("Finding movies you may enjoy..."):
 
-# ---- tab 3: EDA
-with tab_eda:
-    st.subheader("Dataset overview")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Movies", f"{len(meta):,}")
-    m2.metric("Genres", len(all_genres))
-    m3.metric("Directors", f"{meta['director'].nunique():,}")
-    m4.metric("Average rating", f"{meta['vote_average'].mean():.2f}")
-    a, b = st.columns(2)
-    with a:
-        st.markdown("**Movies per genre**")
-        st.bar_chart(meta.explode("genres_l")["genres_l"].value_counts().head(15))
-        st.markdown("**Movies released per decade**")
-        st.bar_chart((meta["year"] // 10 * 10).value_counts().sort_index())
-    with b:
-        st.markdown("**Distribution of ratings**")
-        v = meta.loc[meta["vote_count"] >= 10, "vote_average"]
-        hist, edges = np.histogram(v, bins=np.arange(0, 10.5, 0.5))
-        st.bar_chart(pd.Series(hist, index=[f"{e:.1f}" for e in edges[:-1]]))
-        st.markdown("**Top original languages**")
-        st.bar_chart(meta["original_language"].map(lambda c: LANGS.get(c, c)).value_counts().head(8))
-    st.markdown("**Highest-rated directors** (at least 3 movies, rating from movies with 50+ votes)")
-    d = meta[(meta["vote_count"] >= 50) & (meta["director"] != "")].groupby("director")["vote_average"].agg(["mean", "count"])
-    st.dataframe(d[d["count"] >= 3].sort_values("mean", ascending=False).head(10).round(2)
-                 .rename(columns={"mean": "avg rating", "count": "movies"}))
+                    recommendations = rec.recommend(
+                        selected_movie,
+                        n=number_of_recommendations,
+                        method=method,
+                        genres=selected_genres or None,
+                        min_rating=min_rating,
+                        language=selected_language,
+                        year_range=year_range,
+                    )
 
-# ---- tab 4: evaluation
-with tab_eval:
-    res = load_eval()
-    st.subheader("How good are the recommendations?")
-    st.write("Each method was tested on **unseen users**: for a movie a user liked, we asked for 10 recommendations "
-             "and checked how many of the user's *other* liked movies were found (Precision@10) and whether at least "
-             "one was found (Hit-rate@10). Hybrid weights were tuned on separate validation users.")
-    if res is None:
-        st.info("Run the notebook to generate `artifacts/evaluation_results.csv` and the results will appear here.")
-    else:
-        st.dataframe(res.round(4))
-        st.bar_chart(res[["Precision@10", "HitRate@10"]])
-        st.caption("Absolute numbers look small because each user liked only a few of thousands of candidate movies; "
-                   "compare the methods with each other.")
-    if rec.mode == "full":
-        st.markdown("**Tuned hybrid weights**")
-        st.bar_chart(pd.Series(rec.weights))
+                if recommendations.empty:
+                    st.warning(
+                        "No movies match the selected filters. "
+                        "Try relaxing your filters."
+                    )
 
-# ---- tab 5: about
-with tab_about:
-    st.markdown("""
-### About this project
-**CineMatch** recommends movies using several complementary signals:
-1. **Bag-of-Words and TF-IDF**: compare the words in each movie's overview, genres, keywords, cast and director.
-2. **Sentence embeddings** (`all-MiniLM-L6-v2`): understand meaning, so related stories match even without shared words.
-3. **Collaborative filtering**: learns from MovieLens viewers' ratings (SVD) which movies are liked by the same people.
-4. **Hybrid ranking**: blends the signals with a rating/popularity prior; weights are tuned on validation users.
+                else:
 
-**Extra features:** filters (genre, rating, language, year), taste profiles from several movies, explanations for every
-recommendation, data exploration dashboard and an offline evaluation of all methods.
+                    st.success(
+                        f"Found {len(recommendations)} recommendations!"
+                    )
 
-**Tech stack:** Python, pandas, NumPy, SciPy, scikit-learn, NLTK, sentence-transformers, Streamlit.
+                    st.markdown(
+                        f"### Because you selected: **{selected_movie}**"
+                    )
 
-**Data:** TMDB 5000 Movie Dataset (movies and credits) and MovieLens (GroupLens) ratings.
-MovieLens: F. M. Harper and J. A. Konstan, *The MovieLens Datasets: History and Context*, ACM TiiS, 2015.
-""")
+                    for i, (_, movie) in enumerate(
+                        recommendations.iterrows(),
+                        start=1,
+                    ):
+
+                        with st.container(border=True):
+
+                            col1, col2 = st.columns(
+                                [0.12, 0.88]
+                            )
+
+                            with col1:
+                                st.markdown(f"## {i}")
+
+                            with col2:
+
+                                st.markdown(
+                                    f"### {movie['label']}"
+                                )
+
+                                details = []
+
+                                if pd.notna(movie.get("year")):
+                                    details.append(
+                                        str(int(movie["year"]))
+                                    )
+
+                                if pd.notna(
+                                    movie.get("vote_average")
+                                ):
+                                    details.append(
+                                        f"⭐ {movie['vote_average']:.1f}/10"
+                                    )
+
+                                if movie.get("genres_l"):
+                                    details.append(
+                                        ", ".join(movie["genres_l"])
+                                    )
+
+                                st.caption(" | ".join(details))
+
+                                if movie.get("overview"):
+                                    st.write(movie["overview"])
+
+                                movie_index = int(movie.name)
+
+                                reasons = rec.explain(
+                                    rec.label_to_idx[selected_movie],
+                                    movie_index,
+                                )
+
+                                if reasons:
+                                    with st.expander(
+                                        "Why this recommendation?"
+                                    ):
+                                        for reason in reasons:
+                                            st.write(f"• {reason}")
+
+                                if "score" in movie:
+                                    st.caption(
+                                        f"Recommendation score: "
+                                        f"{movie['score']:.4f}"
+                                    )
+
+            except Exception as e:
+                st.error(
+                    "Something went wrong while generating recommendations."
+                )
+
+                with st.expander("Technical error"):
+                    st.exception(e)
+
+
+# --------------------------------------------------
+# TAB 2: ABOUT
+# --------------------------------------------------
+
+with tab2:
+
+    st.subheader("About CineMatch")
+
+    st.write(
+        """
+        CineMatch is a content-based movie recommendation system
+        designed to help users discover movies based on their
+        preferences and movie characteristics.
+        """
+    )
+
+    st.markdown("### Recommendation Techniques")
+
+    st.markdown(
+        """
+        **1. TF-IDF (Term Frequency–Inverse Document Frequency)**
+
+        Identifies similarities between movies using their textual
+        information, such as genres, keywords, cast and descriptions.
+
+        **2. Bag of Words (BoW)**
+
+        Represents movie information through word-frequency features.
+
+        **3. Quality-Based Recommendation**
+
+        Uses movie rating information as an additional recommendation signal.
+
+        **4. Hybrid Recommendation**
+
+        Combines TF-IDF similarity and movie quality scores to generate
+        recommendations.
+        """
+    )
+
+    st.markdown("### Dataset")
+
+    st.write(
+        """
+        CineMatch uses the TMDB 5000 Movies and Credits datasets.
+        """
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Movies", f"{rec.n:,}")
+
+    col2.metric(
+        "Recommendation Mode",
+        rec.mode.upper(),
+    )
+
+    col3.metric(
+        "Available Signals",
+        str(len(rec.signals)),
+    )
+
+    st.markdown("---")
+
+    st.caption(
+        "CineMatch | Movie Recommendation System"
+    )
