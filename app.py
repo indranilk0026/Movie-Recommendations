@@ -41,7 +41,7 @@ def load_eval():
 rec = load_recommender()
 if rec is None:
     st.error("No model found. Add the `artifacts/` folder (from the notebook) or the two TMDB csv files "
-             "(`tmdb_5000_movies.csv`, `tmdb_5000_credits.csv`) in a `datasets/` folder.")
+             "(`tmdb_5000_movies.csv`, `tmdb_5000_credits.zip`) in a `datasets/` folder.")
     st.stop()
 meta = rec.meta
 
