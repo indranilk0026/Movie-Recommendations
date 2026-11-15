@@ -19,7 +19,7 @@ try:
 except Exception:                      # nltk missing -> skip stemming instead of crashing
     _stem = lambda w: w
 
-MOVIES_CSV, CREDITS_CSV = "tmdb_5000_movies.csv", "tmdb_5000_credits.csv"
+MOVIES_CSV, CREDITS_CSV = "tmdb_5000_movies.csv", "tmdb_5000_credits.zip"
 
 
 def find_data_dir(candidates=("datasets", "data", ".", "..")):
